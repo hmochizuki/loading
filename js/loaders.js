@@ -352,21 +352,45 @@
       }
     }
 
+    // やわらかい縁の影をひとつ描く
+    drawSoftShadow(ctx, x, y, rx, ry, a) {
+      if (a <= 0.004 || rx <= 1 || ry <= 0.5) return;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(rx, ry);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      g.addColorStop(0, 'rgba(0,0,0,' + a.toFixed(3) + ')');
+      g.addColorStop(0.7, 'rgba(0,0,0,' + (a * 0.5).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, 1, 0, U.TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // それぞれのからだなりの影。各ローディングが上書きする。
+    // s: 大きさの係数(浮くと小さく・呼吸が乗る) / a: 濃さの係数
+    subShadow(ctx, s, a, t) {
+      this.drawSoftShadow(ctx, 0, 70, 55 * s, 8 * s, 0.16 * a);
+    }
+
     draw(ctx, cx, cy, t) {
       const pr = this.presence(t);
       if (pr.alpha <= 0.002) return;
-      ctx.save();
-      ctx.translate(cx + pr.ox + this.home.x, cy + pr.oy + this.home.y);
+      const ba = this.bodyAlpha();
 
-      // 足もとのほのかな影
+      // 影は地面に残る。からだが浮くほど、小さく薄くなる
       ctx.save();
-      ctx.globalAlpha = pr.alpha * 0.1 * this.bodyAlpha();
-      ctx.fillStyle = '#000';
-      ctx.beginPath();
-      ctx.ellipse(0, 84, 62 * pr.sx, 9 * pr.sx, 0, 0, U.TAU);
-      ctx.fill();
+      ctx.translate(cx + this.home.x + pr.ox, cy + this.home.y);
+      const lift = -pr.oy;
+      const shS = U.clamp(1 - lift * 0.0045, 0.5, 1.15) * pr.sx;
+      const shA = U.clamp(1 - lift * 0.008, 0.15, 1.25) * pr.alpha * ba;
+      this.subShadow(ctx, shS, shA, t);
       ctx.restore();
 
+      ctx.save();
+      ctx.translate(cx + pr.ox + this.home.x, cy + pr.oy + this.home.y);
       ctx.rotate(pr.rot);
       ctx.scale(pr.sx, pr.sy);
       ctx.globalAlpha = pr.alpha;
@@ -402,6 +426,24 @@
       this.coilAng = 0;
       this.coilTurned = 0;
       this.settle = false;
+    }
+
+    // 輪の影。つぶれると広く濃く、旅の途中はからだの広がりなりに
+    subShadow(ctx, s, a, t) {
+      if (this.trail) {
+        let minX = 1e9, maxX = -1e9;
+        for (const p of this.trail) {
+          const x = p.x - this.home.x;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+        const mid = (minX + maxX) / 2;
+        const rx = U.clamp(((maxX - minX) / 2) * 0.85 + 8, 16, 95);
+        this.drawSoftShadow(ctx, mid, 62, rx, 7, 0.15 * a);
+        return;
+      }
+      const sq = U.clamp(this.squash.v, 0, 1);
+      this.drawSoftShadow(ctx, 0, 62, 47 * s * (1 + sq * 0.38), 7.5, (0.15 + sq * 0.07) * a);
     }
 
     // うれしさは、弧を走る光になる
@@ -716,6 +758,33 @@
 
     dotX(i) { return (i - 1) * this.spacing; }
 
+    _amp() {
+      const h = this.heart;
+      return 12 * (0.8 + this.nature.liveliness * 0.2)
+        * (1 - h.drowsy * 0.7) * (1 - h.fatigue * 0.45) * (1 + this.groove * 0.6);
+    }
+
+    // 地面からの高さ。正なら浮いている
+    _dotLift(i) {
+      const d = this.dots[i];
+      const off = i * 0.62 * (1 - this.groove);
+      const bounce = Math.max(0, Math.sin(this.ph - off)) * this._amp();
+      return bounce - d.hop.v - this.heart.drowsy * 3 - d.hide * 12;
+    }
+
+    // 点ひとつずつに、小さな影がついてくる。跳ねたぶんだけ遠のく
+    subShadow(ctx, s, a, t) {
+      for (let i = 0; i < 3; i++) {
+        const d = this.dots[i];
+        const scale = 1 - d.hide;
+        if (scale < 0.03) continue;
+        const lift = Math.max(0, this._dotLift(i));
+        const rx = 8.6 * s * scale * U.clamp(1 - lift * 0.012, 0.45, 1);
+        const aa = 0.2 * a * scale * U.clamp(1 - lift * 0.02, 0.2, 1);
+        this.drawSoftShadow(ctx, this.dotX(i), 21, rx, 3.2, aa);
+      }
+    }
+
     nearest(x) {
       const lx = x - window.YW.view.cx - this.home.x;
       let bi = -1, bd = 46;
@@ -849,22 +918,17 @@
 
     subDraw(ctx) {
       const h = this.heart;
-      const amp = 12 * (0.8 + this.nature.liveliness * 0.2)
-        * (1 - h.drowsy * 0.7) * (1 - h.fatigue * 0.45) * (1 + this.groove * 0.6);
       const rDot = 9;
       ctx.fillStyle = this.bodyColor();
       for (let i = 0; i < 3; i++) {
         const d = this.dots[i];
         const scale = 1 - d.hide;
         if (scale < 0.02) continue;
-        // groove のときはそろって跳ねる
-        const off = i * 0.62 * (1 - this.groove);
-        const bounce = Math.max(0, Math.sin(this.ph - off)) * amp;
         const stretch = U.clamp(d.stretch.v, 0, 1);
         const rx = rDot * (1 - stretch * 0.32) * scale;
         const ry = rDot * (1 + stretch * 1.5) * scale;
         const x = this.dotX(i);
-        let y = -bounce + d.hop.v + h.drowsy * 3 + d.hide * 12;
+        let y = -this._dotLift(i);
         y -= (ry - rDot); // 伸びても足もとは変えない
         ctx.save();
         ctx.globalAlpha *= (1 - d.hide * 0.85);
@@ -914,6 +978,15 @@
     // うれしさは、バーを走り抜ける光になる
     joyBurst() {
       if (this.pulses.length < 4) this.pulses.push({ p: -0.08 });
+    }
+
+    // 横に長い、薄い影。尺取りの縮みと首のかしげがうつる
+    subShadow(ctx, s, a, t) {
+      ctx.save();
+      ctx.rotate(this.tiltNow * 0.5);
+      const rx = (this.w / 2 + 6) * s * (1 + this.stretchNow);
+      this.drawSoftShadow(ctx, 0, 26, rx, 5.5, 0.14 * a);
+      ctx.restore();
     }
 
     onStroke(s) {
@@ -1086,6 +1159,12 @@
       if (this.joyBands.length < 3) this.joyBands.push({ x: -1.9 });
     }
 
+    // 丸いところと、行のならびに、それぞれぼんやりした影
+    subShadow(ctx, s, a) {
+      this.drawSoftShadow(ctx, -72, 42, 19 * s, 4.5, 0.13 * a);
+      this.drawSoftShadow(ctx, 22, 42, 80 * s, 5.5, 0.1 * a);
+    }
+
     // まだ形の定まらないものだから、とけるように移動する
     bodyAlpha() {
       if (!this.tele) return 1;
@@ -1243,6 +1322,14 @@
 
     _moundAt(x) {
       return this.mound * Math.exp(-(x * x) / (2 * 12 * 12));
+    }
+
+    // 立っているときは足もとに小さく、横になると接地が長くなる
+    subShadow(ctx, s, a, t) {
+      const rot = this.tilt.v + this.rotBody;
+      const side = Math.abs(Math.sin(rot));
+      const rx = U.lerp(40, 62, side) * s;
+      this.drawSoftShadow(ctx, 0, 66, rx, 7, (0.15 + side * 0.05) * a);
     }
 
     // うれしさは、金色の砂になって舞い上がる
