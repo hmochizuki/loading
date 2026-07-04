@@ -142,6 +142,17 @@
       this.emitSparkles(x, y, n, 20);
     }
 
+    // 行き先が画面からはみ出さないように
+    clampTarget(tx, ty, marginX, marginY) {
+      const v = window.YW.view;
+      const mx = Math.max(60, v.w / 2 - marginX);
+      const my = Math.max(60, v.h / 2 - marginY);
+      return { x: U.clamp(tx, -mx, mx), y: U.clamp(ty, -my, my) };
+    }
+
+    // からだの見えなさ。とけて移動する子が上書きする(影も一緒に薄くなる)
+    bodyAlpha() { return 1; }
+
     // --- こころへの共通の流し込み。main から呼ばれる ---
 
     tapAt(x, y) {
@@ -328,7 +339,7 @@
 
       // 足もとのほのかな影
       ctx.save();
-      ctx.globalAlpha = pr.alpha * 0.1;
+      ctx.globalAlpha = pr.alpha * 0.1 * this.bodyAlpha();
       ctx.fillStyle = '#000';
       ctx.beginPath();
       ctx.ellipse(0, 84, 62 * pr.sx, 9 * pr.sx, 0, 0, U.TAU);
@@ -404,10 +415,7 @@
     }
 
     _setTarget(tx, ty) {
-      const v = window.YW.view;
-      const mx = Math.max(60, v.w / 2 - 70);
-      const my = Math.max(60, v.h / 2 - 90);
-      this.target = { x: U.clamp(tx, -mx, mx), y: U.clamp(ty, -my, my) };
+      this.target = this.clampTarget(tx, ty, 70, 90);
     }
 
     _startSnake(tx, ty) {
@@ -661,6 +669,7 @@
       this.wavePend = [];   // なでられてのウェーブ
       this.waveCd = 0;
       this.crumbs = [];     // うれしくて跳ねる、点の子たち
+      this.stroll = null;   // 小走りの行き先
       this.dots = [0, 1, 2].map(() => ({
         hop: new Spring(0, 110, 9),
         stretch: new Spring(0, 70, 11),
@@ -687,7 +696,7 @@
     dotX(i) { return (i - 1) * this.spacing; }
 
     nearest(x) {
-      const lx = x - window.YW.view.cx;
+      const lx = x - window.YW.view.cx - this.home.x;
       let bi = -1, bd = 46;
       for (let i = 0; i < 3; i++) {
         const d = Math.abs(lx - this.dotX(i));
@@ -696,7 +705,15 @@
       return bi;
     }
 
-    onTap(x) {
+    onTap(x, y) {
+      const v = window.YW.view;
+      const tx = x - v.cx, ty = y - v.cy;
+      if (Math.hypot(tx - this.home.x, ty - this.home.y) > 110) {
+        // 離れたところから呼ばれた。ぴょんぴょん小走りでかけていく
+        this.stroll = this.clampTarget(tx, ty, 110, 80);
+        this.heart.touch();
+        return;
+      }
       const i = this.nearest(x);
       if (i >= 0) {
         this.dots[i].hop.kick(-260);
@@ -752,14 +769,32 @@
     subUpdate(dt) {
       const h = this.heart;
       this.groove = Math.max(0, this.groove - dt * 0.1);
-      const speed = 3.1
+      let speed = 3.1
         * (0.8 + this.nature.liveliness * 0.2)
         * (1 - h.drowsy * 0.55)
         * (1 - h.fatigue * 0.3)
         * (1 + this.groove * 0.2);
+
+      if (this.stroll) {
+        // 小走り。跳ねを速めて、みんなで寄り添って向かう
+        speed *= 2.4;
+        const dx = this.stroll.x - this.home.x, dy = this.stroll.y - this.home.y;
+        const d = Math.hypot(dx, dy);
+        const sp = 120 * (0.8 + this.nature.liveliness * 0.3) * (h.stress > 0.45 ? 1.5 : 1);
+        if (d < 4) {
+          this.stroll = null;
+          this.joyBurst(0, -8, 2);
+          for (const dd of this.dots) dd.hop.kick(-90); // 着いた、のひと跳ね
+        } else {
+          const step = Math.min(d, sp * dt);
+          this.home.x += (dx / d) * step;
+          this.home.y += (dy / d) * step;
+        }
+      }
       this.ph += dt * speed;
-      // やさしくされると寄り添う
-      this.spacing = U.damp(this.spacing, U.lerp(39, 26, h.comfort), 1.1, dt);
+      // やさしくされると寄り添う。小走り中も寄り添う
+      const near = this.stroll ? 22 : U.lerp(39, 26, h.comfort);
+      this.spacing = U.damp(this.spacing, near, this.stroll ? 4 : 1.1, dt);
       // 点の子たちは、小さく弾んで消えていく
       for (let i = this.crumbs.length - 1; i >= 0; i--) {
         const c = this.crumbs[i];
@@ -849,6 +884,10 @@
       this.retreat = 0;
       this.w = 190;
       this.pulses = [];   // うれしさが端から端へ走る光
+      this.trip = null;   // 尺取り虫の行き先
+      this.tripPh = 0;
+      this.stretchNow = 0;
+      this.tiltNow = 0;
     }
 
     // うれしさは、バーを走り抜ける光になる
@@ -857,8 +896,9 @@
     }
 
     onStroke(s) {
+      if (this.trip) return;
       const v = window.YW.view;
-      if (Math.abs(s.y - v.cy) > 80) return;
+      if (Math.abs(s.y - v.cy - this.home.y) > 80) return;
       if (s.dx > 0) {
         // 進むふり。でも完了はしない。
         this.target = Math.min(0.86, this.target + s.dx * 0.0015);
@@ -869,7 +909,19 @@
       if (s.speed > 1.5) this.tremble.kick(90);
     }
 
-    onTap() { this.tremble.kick(50); }
+    onTap(x, y) {
+      const v = window.YW.view;
+      const tx = x - v.cx, ty = y - v.cy;
+      if (Math.hypot(tx - this.home.x, ty - this.home.y) > 150) {
+        // 離れたところから呼ばれた。尺取り虫のように、伸びては縮んで向かう
+        this.trip = this.clampTarget(tx, ty, 115, 60);
+        this.tripPh = 0;
+        this.heart.touch();
+        return;
+      }
+      this.tremble.kick(50);
+    }
+
     onRapid() { this.tremble.kick(170); }
 
     onPress(info, dt) {
@@ -884,6 +936,32 @@
       this.target = U.damp(this.target, 0.14 + this.heart.comfort * 0.12, 0.03, dt);
       this.fill = U.damp(this.fill, this.target, this.retreat > 0 ? 2.2 : 4.5, dt);
       this.retreat = Math.max(0, this.retreat - dt);
+
+      if (this.trip) {
+        // 尺取り虫: 縮んでいるあいだに進み、伸びてひと休み
+        this.tripPh += dt * 5.2;
+        const shrink = (1 - Math.cos(this.tripPh)) / 2; // 0..1 縮み具合
+        this.stretchNow = U.damp(this.stretchNow, -shrink * 0.22, 10, dt);
+        const dx = this.trip.x - this.home.x, dy = this.trip.y - this.home.y;
+        const d = Math.hypot(dx, dy);
+        const sp = 105 * (0.8 + this.nature.liveliness * 0.3)
+          * (0.15 + shrink) * (this.heart.stress > 0.45 ? 1.5 : 1);
+        if (d < 5) {
+          this.trip = null;
+          this.joyBurst();
+        } else {
+          const step = Math.min(d, sp * dt);
+          this.home.x += (dx / d) * step;
+          this.home.y += (dy / d) * step;
+        }
+        // 行き先へ、ほんの少し首をかしげる
+        const want = U.clamp(Math.atan2(dy, Math.abs(dx) + 60), -0.3, 0.3);
+        this.tiltNow = U.damp(this.tiltNow, want, 4, dt);
+      } else {
+        this.stretchNow = U.damp(this.stretchNow, 0, 6, dt);
+        this.tiltNow = U.damp(this.tiltNow, 0, 4, dt);
+      }
+
       for (let i = this.pulses.length - 1; i >= 0; i--) {
         this.pulses[i].p += dt * 1.5;
         if (this.pulses[i].p > 1.1) this.pulses.splice(i, 1);
@@ -911,6 +989,9 @@
 
     subDraw(ctx, t) {
       const h = this.heart;
+      // 尺取り虫の伸び縮みと、首のかしげ
+      ctx.rotate(this.tiltNow);
+      ctx.scale(1 + this.stretchNow, 1 - this.stretchNow * 0.6);
       ctx.lineCap = 'round';
       // わく
       ctx.strokeStyle = this.bodyColor(0.2);
@@ -976,6 +1057,7 @@
       this.jy = new Spring(0, 130, 7);
       this.glitch = 0;
       this.joyBands = [];   // うれしさの一閃
+      this.tele = null;     // とけて、あちらに現れる
     }
 
     // うれしさは、速い光の帯になって駆け抜ける
@@ -983,7 +1065,23 @@
       if (this.joyBands.length < 3) this.joyBands.push({ x: -1.9 });
     }
 
-    onTap() {
+    // まだ形の定まらないものだから、とけるように移動する
+    bodyAlpha() {
+      if (!this.tele) return 1;
+      const k = this.tele.t;
+      if (k < 0.5) return 1 - U.smooth(k / 0.5);
+      return U.smooth((k - 0.6) / 0.6);
+    }
+
+    onTap(x, y) {
+      const v = window.YW.view;
+      const tx = x - v.cx, ty = y - v.cy;
+      if (!this.tele && Math.hypot(tx - this.home.x, ty - this.home.y) > 150) {
+        // 離れたところから呼ばれた。輪郭をほどいて、そちらで結び直す
+        this.tele = { t: 0, to: this.clampTarget(tx, ty, 120, 70), moved: false };
+        this.heart.touch();
+        return;
+      }
       this.jx.kick(4);
       this.jy.kick(-4.5);
     }
@@ -993,7 +1091,7 @@
     }
 
     onStroke(s) {
-      this.chaseX = (s.x - window.YW.view.cx) / 130;
+      this.chaseX = (s.x - window.YW.view.cx - this.home.x) / 130;
       this.chaseT = 0.5;
     }
 
@@ -1005,6 +1103,20 @@
       } else {
         this.shimmerX += dt * 0.6 * (0.8 + this.nature.liveliness * 0.2) * (1 - this.heart.drowsy * 0.55);
         if (this.shimmerX > 1.7) this.shimmerX = -1.7;
+      }
+      if (this.tele) {
+        this.tele.t += dt;
+        // とけているあいだは、輪郭が少し揺らぐ
+        this.glitch = Math.max(this.glitch, (1 - this.bodyAlpha()) * 0.5);
+        if (!this.tele.moved && this.tele.t >= 0.55) {
+          this.home.x = this.tele.to.x;
+          this.home.y = this.tele.to.y;
+          this.tele.moved = true;
+        }
+        if (this.tele.t > 1.2) {
+          this.tele = null;
+          this.joyBurst(); // 結び直せた、の一閃
+        }
       }
       this.glitch = Math.max(0, this.glitch - dt * 0.65);
       for (let i = this.joyBands.length - 1; i >= 0; i--) {
@@ -1038,6 +1150,9 @@
 
     subDraw(ctx, t) {
       const h = this.heart;
+      const ba = this.bodyAlpha();
+      if (ba <= 0.004) return;
+      ctx.globalAlpha *= ba;
       ctx.scale(1 + this.jx.v * 0.1, 1 + this.jy.v * 0.1);
       const rad = Math.max(2, this.radius.v);
       const shapes = this._shapes();
@@ -1101,6 +1216,8 @@
       this.prevClog = 0;
       this.spawnT = 0;
       this.parts = [];
+      this.roll = null;    // ころんと転がる旅
+      this.rotBody = 0;    // 転がりの回転
     }
 
     _moundAt(x) {
@@ -1121,7 +1238,20 @@
       }
     }
 
-    onTap() {
+    onTap(x, y) {
+      const v = window.YW.view;
+      const tx = x - v.cx, ty = y - v.cy;
+      if (!this.roll && Math.hypot(tx - this.home.x, ty - this.home.y) > 130) {
+        // 離れたところから呼ばれた。ころんと倒れて、転がっていく
+        this.roll = {
+          phase: 'tip',
+          t: 0,
+          to: this.clampTarget(tx, ty, 80, 110),
+          dir: Math.sign(tx - this.home.x) || 1,
+        };
+        this.heart.touch();
+        return;
+      }
       this.topJig.kick(-70);
       // 砂が少し跳ねる
       for (let k = 0; k < 4; k++) {
@@ -1136,6 +1266,7 @@
     }
 
     onStroke(s) {
+      if (this.roll) return;
       // 傾けるようになぞると、流れが揺れる
       this.tilt.set(U.clamp(this.tilt.t + s.dx * 0.0012, -0.3, 0.3));
       this.tiltHold = 0.4;
@@ -1147,6 +1278,43 @@
 
     subUpdate(dt, t) {
       const h = this.heart;
+
+      if (this.roll) {
+        const r = this.roll;
+        r.t += dt;
+        if (r.phase === 'tip') {
+          // ころん、と横になる
+          this.rotBody = U.easeOutBack(r.t / 0.45) * (Math.PI / 2) * r.dir;
+          if (r.t >= 0.45) { r.phase = 'go'; r.t = 0; }
+        } else if (r.phase === 'go') {
+          const dx = r.to.x - this.home.x, dy = r.to.y - this.home.y;
+          const d = Math.hypot(dx, dy);
+          const sp = 140 * (0.8 + this.nature.liveliness * 0.3);
+          if (d < 6) {
+            r.phase = 'stand';
+            r.t = 0;
+            r.from = this.rotBody;
+            // いちばん近い「起きた向き」まで、少し余分に転がって立つ
+            r.upright = Math.ceil((this.rotBody * r.dir) / U.TAU) * U.TAU * r.dir;
+            if (Math.abs(r.upright - r.from) < 0.1) r.upright += U.TAU * r.dir;
+          } else {
+            const step = Math.min(d, sp * dt);
+            this.home.x += (dx / d) * step;
+            this.home.y += (dy / d) * step;
+            this.rotBody += (step / (this.hh * 0.62)) * r.dir; // 転がるぶんだけ回る
+          }
+        } else if (r.phase === 'stand') {
+          const k = U.clamp(r.t / 0.55, 0, 1);
+          this.rotBody = U.lerp(r.from, r.upright, U.easeOutBack(k));
+          if (k >= 1) {
+            this.rotBody = 0;
+            this.roll = null;
+            this.topJig.kick(-60);      // 立ち上がって、砂がふわっと
+            this.joyBurst(0, 0, 2);
+          }
+        }
+      }
+
       this.tiltHold = Math.max(0, this.tiltHold - dt);
       if (this.tiltHold <= 0) this.tilt.set(U.damp(this.tilt.t, 0, 2.5, dt));
       this.tilt.update(dt);
@@ -1155,8 +1323,8 @@
       this.prevClog = this.clog;
       this.clog = Math.max(0, this.clog - dt);
 
-      // 流れの太さ。疲れると細くなる
-      const flow = this.clog > 0 ? 0
+      // 流れの太さ。疲れると細くなる。転がっているあいだは砂も息をひそめる
+      const flow = (this.clog > 0 || this.roll) ? 0
         : (0.8 + this.nature.liveliness * 0.2) * (1 - h.fatigue * 0.6) * (1 - h.drowsy * 0.45);
       this.spawnT -= dt;
       if (flow > 0.05 && this.spawnT <= 0) {
@@ -1182,15 +1350,17 @@
       const ax = -Math.sin(this.tilt.v) * G * 0.4;
       const ay = Math.cos(this.tilt.v) * G;
       const floor = this.hh - 5;
-      for (let i = this.parts.length - 1; i >= 0; i--) {
-        const p = this.parts[i];
-        p.vx += ax * dt;
-        p.vy += ay * dt;
-        p.x += p.vx * dt + U.noise(t * 6 + i) * 12 * dt;
-        p.y += p.vy * dt;
-        if (p.y >= floor - this._moundAt(p.x)) {
-          if (!p.pop) this.mound = Math.min(15, this.mound + 0.05);
-          this.parts.splice(i, 1);
+      if (!this.roll) {
+        for (let i = this.parts.length - 1; i >= 0; i--) {
+          const p = this.parts[i];
+          p.vx += ax * dt;
+          p.vy += ay * dt;
+          p.x += p.vx * dt + U.noise(t * 6 + i) * 12 * dt;
+          p.y += p.vy * dt;
+          if (p.y >= floor - this._moundAt(p.x)) {
+            if (!p.pop) this.mound = Math.min(15, this.mound + 0.05);
+            this.parts.splice(i, 1);
+          }
         }
       }
       if (this.parts.length > 160) this.parts.splice(0, this.parts.length - 160);
@@ -1202,7 +1372,7 @@
     subDraw(ctx, t) {
       const h = this.heart;
       const hw = this.hw, hh = this.hh;
-      ctx.rotate(this.tilt.v);
+      ctx.rotate(this.tilt.v + this.rotBody);
       if (this.clog > 0) {
         ctx.translate(U.noise(t * 28) * 2 * Math.min(1, this.clog), 0);
       }
