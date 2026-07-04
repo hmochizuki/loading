@@ -68,6 +68,7 @@
           this.mannerT = U.rand(4, 8) / this.nature.liveliness;
           this.wiggle.kick(U.rand(2.2, 3.2) * (Math.random() < 0.5 ? -1 : 1));
           this.joyBurst(0, -18, 4);
+          this.justWiggled = true; // となりの子が、つられるかもしれない
         }
       }
       this.wiggle.update(dt);

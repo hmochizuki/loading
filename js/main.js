@@ -2,6 +2,7 @@
  *
  * 画面には背景とローディングだけ。
  * ひとつが去ると、少し間をおいて次が現れる。
+ * ごくまれに、ふたりで来ることもある。
  */
 (function () {
   'use strict';
@@ -44,11 +45,42 @@
     return deck.pop();
   }
 
-  let current = null;
+  let actors = [];
   let gapT = 0.6; // 最初は少しだけ待って現れる
+  let lastTouched = null;
+
+  function traveling(a) {
+    return !!(a.stroll || a.trip || a.tele || a.roll || a.settle
+      || (a.mode && a.mode !== 'ring'));
+  }
+
+  function nearestActor(x, y) {
+    let best = null, bd = Infinity;
+    for (const a of actors) {
+      if (a.phase === 'exit') continue;
+      const d = Math.hypot(x - (view.cx + a.home.x), y - (view.cy + a.home.y));
+      if (d < bd) { bd = d; best = a; }
+    }
+    return best;
+  }
+
+  function spawnNext() {
+    const Kind = nextKind();
+    const a = new Kind(new Heart());
+    actors = [a];
+    // ごくまれに、ふたりで来る
+    if (view.w >= 430 && Math.random() < 0.12) {
+      const Kind2 = nextKind();
+      const b = new Kind2(new Heart());
+      a.home.x = -88;
+      b.home.x = 88;
+      b.breath += 1.7; // 呼吸まではそろえない
+      actors.push(b);
+    }
+  }
 
   // --- 星の思い出 ---
-  // 去っていった子は、ごく薄い星になって夜空に残る。
+  // 去っていった子は、消えたあたりの空に、ごく薄い星になって残る。
   // しあわせに去った子は、少しだけあたたかい色になる。
   const STAR_KEY = 'yasashiku-matte-stars';
   let stars = [];
@@ -60,7 +92,6 @@
   function rememberStar(loader) {
     const mood = loader.exitStyle;
     const warm = mood === 'happy' || mood === 'sleepy';
-    // その子が消えたあたりの空に、星が生まれる
     const px = U.clamp((view.cx + loader.home.x) / view.w + U.rand(-0.02, 0.02), 0.05, 0.95);
     const py = U.clamp(
       (view.cy + loader.home.y - (mood === 'happy' ? 170 : 110)) / view.h + U.rand(-0.02, 0.02),
@@ -146,11 +177,7 @@
     drawStars(t);
   }
 
-  // --- 手つきをローディングへ届ける ---
-  function alive() {
-    return current && current.phase !== 'exit' ? current : null;
-  }
-
+  // --- 手つきをローディングへ届ける。ふたりいるときは、近いほうへ ---
   function notePointer(x, y) {
     view.pointer = { x, y, t: performance.now() / 1000 };
   }
@@ -158,42 +185,98 @@
   const input = new InputSense(canvas, {
     touchStart(x, y) {
       notePointer(x, y);
-      const c = alive();
-      if (c) c.heart.touch();
+      const c = nearestActor(x, y);
+      if (c) { lastTouched = c; c.heart.touch(); }
     },
     tap(x, y) {
       notePointer(x, y);
-      const c = alive();
-      if (c) c.tapAt(x, y);
+      const c = nearestActor(x, y);
+      if (c) { lastTouched = c; c.tapAt(x, y); }
     },
     rapid(count) {
-      const c = alive();
+      const c = lastTouched && lastTouched.phase !== 'exit' ? lastTouched : null;
       if (c) c.rapidTaps(count);
     },
     stroke(s) {
       notePointer(s.x, s.y);
-      const c = alive();
-      if (c) c.strokeMove(s);
+      const c = nearestActor(s.x, s.y);
+      if (c) { lastTouched = c; c.strokeMove(s); }
     },
     release(info) {
-      const c = alive();
-      if (c) c.released(info);
+      if (lastTouched && actors.includes(lastTouched)) lastTouched.released(info);
     },
     multi() {
-      const c = alive();
-      if (c) c.multiTouch();
+      for (const c of actors) {
+        if (c.phase !== 'exit') c.multiTouch();
+      }
     },
   });
 
+  // --- ふたりの時間 ---
+  function duoUpdate(dt) {
+    if (actors.length !== 2) {
+      for (const a of actors) a.justWiggled = false;
+      return;
+    }
+    const [a, b] = actors;
+    if (a.phase === 'exit' || b.phase === 'exit') return;
+
+    // そばにいたい。でも、くっつきすぎない
+    if (!traveling(a) && !traveling(b)) {
+      const dx = b.home.x - a.home.x;
+      const adx = Math.abs(dx) || 1;
+      const dir = dx / adx;
+      if (adx < 132) {
+        const push = (132 - adx) * 1.2 * dt;
+        a.home.x -= dir * push;
+        b.home.x += dir * push;
+      } else if (adx > 215) {
+        const pull = Math.min((adx - 215) * 0.6, 30) * dt;
+        a.home.x += dir * pull;
+        b.home.x -= dir * pull;
+      }
+    }
+
+    // 共感: 片方の不安は、もう片方にも少し伝わる
+    if (a.heart.stress > 0.5) b.heart.stress = Math.min(1, b.heart.stress + dt * 0.04);
+    if (b.heart.stress > 0.5) a.heart.stress = Math.min(1, a.heart.stress + dt * 0.04);
+
+    // つられて身震い
+    if (a.justWiggled) { a.justWiggled = false; b.echoDelay = U.rand(0.35, 0.8); }
+    if (b.justWiggled) { b.justWiggled = false; a.echoDelay = U.rand(0.35, 0.8); }
+    for (const x of actors) {
+      if (x.echoDelay != null) {
+        x.echoDelay -= dt;
+        if (x.echoDelay <= 0) {
+          x.echoDelay = null;
+          x.wiggle.kick(U.rand(1.8, 2.6) * (Math.random() < 0.5 ? -1 : 1));
+          x.joyBurst(0, -14, 2);
+          x.heart.gentle(0.04);
+        }
+      }
+    }
+  }
+
   // 検証用の小さな窓。ふだんは使わない。
   window.YW.stage = {
-    get current() { return current; },
-    spawn(i) { current = new loaderKinds[i](new Heart()); },
+    get current() { return actors[0] || null; },
+    get actors() { return actors; },
+    spawn(i, duoIdx) {
+      actors = [new loaderKinds[i](new Heart())];
+      if (duoIdx != null) {
+        const b = new loaderKinds[duoIdx](new Heart());
+        actors[0].home.x = -88;
+        b.home.x = 88;
+        actors.push(b);
+      }
+    },
     skip() {
-      if (current && current.phase !== 'exit') {
-        current.phase = 'exit';
-        current.phaseT = 0;
-        current.exitStyle = current.heart.exitMood();
+      for (const c of actors) {
+        if (c.phase !== 'exit') {
+          c.phase = 'exit';
+          c.phaseT = 0;
+          c.exitStyle = c.heart.exitMood();
+        }
       }
     },
   };
@@ -205,39 +288,56 @@
     last = now;
     const t = now / 1000;
 
-    // 押しっぱなしはフレームごとに伝える
-    if (current && current.phase !== 'exit') {
-      const pi = input.pressInfo(now);
-      if (pi) {
+    // 押しっぱなしはフレームごとに、近い子へ伝える
+    const pi = input.pressInfo(now);
+    if (pi) {
+      const c = nearestActor(pi.x, pi.y);
+      if (c) {
+        lastTouched = c;
         view.pointer = { x: pi.x, y: pi.y, t: now / 1000 };
-        current.pressFrame(pi, dt);
+        c.pressFrame(pi, dt);
       }
-      else if (current.pressing && !input.p) current.released({ dur: 0, stroked: false });
+    } else if (!input.p) {
+      for (const a of actors) {
+        if (a.pressing) a.released({ dur: 0, stroked: false });
+      }
     }
 
-    if (current) {
-      current.update(dt, t);
-      if (current.done) {
-        rememberStar(current);
-        current = null;
-        gapT = U.rand(1.3, 2.4);
+    for (let i = actors.length - 1; i >= 0; i--) {
+      actors[i].update(dt, t);
+      if (actors[i].done) {
+        rememberStar(actors[i]);
+        const gone = actors.splice(i, 1)[0];
+        if (lastTouched === gone) lastTouched = null;
+        if (actors.length === 1) {
+          // ひとり残されて、少し所在なさげ
+          const r = actors[0].heart;
+          r.comfort = Math.max(0, r.comfort - 0.15);
+          r.stress = Math.min(1, r.stress + 0.06);
+        }
+        if (actors.length === 0) gapT = U.rand(1.3, 2.4);
       }
-    } else {
+    }
+    duoUpdate(dt);
+
+    if (actors.length === 0) {
       gapT -= dt;
-      if (gapT <= 0) {
-        const Kind = nextKind();
-        current = new Kind(new Heart());
-      }
+      if (gapT <= 0) spawnNext();
     }
 
-    // 背景の気分はゆっくり追いかける
-    const h = current ? current.heart : null;
-    bgMood.warm = U.damp(bgMood.warm, h ? U.clamp(h.comfort * 0.4 + h.joy * 0.5, 0, 1) : 0, 0.5, dt);
-    bgMood.cold = U.damp(bgMood.cold, h ? U.clamp(h.stress * 0.7 + h.fatigue * 0.3, 0, 1) : 0, 0.5, dt);
+    // 背景の気分はゆっくり追いかける。いちばん強い気持ちがにじむ
+    let warmT = 0, coldT = 0;
+    for (const a of actors) {
+      const h = a.heart;
+      warmT = Math.max(warmT, U.clamp(h.comfort * 0.4 + h.joy * 0.5, 0, 1));
+      coldT = Math.max(coldT, U.clamp(h.stress * 0.7 + h.fatigue * 0.3, 0, 1));
+    }
+    bgMood.warm = U.damp(bgMood.warm, warmT, 0.5, dt);
+    bgMood.cold = U.damp(bgMood.cold, coldT, 0.5, dt);
 
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     drawBackground(t);
-    if (current) current.draw(ctx, view.cx, view.cy, t);
+    for (const a of actors) a.draw(ctx, view.cx, view.cy, t);
 
     // すみをそっと暗く
     const v = ctx.createRadialGradient(
