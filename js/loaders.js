@@ -24,6 +24,17 @@
       this.exitDir = Math.random() < 0.5 ? -1 : 1;
       this.breath = U.rand(0, U.TAU);
       this.pressing = false;
+
+      this.sparkles = [];
+      this.wiggle = new Spring(0, 60, 6);   // ごきげんな身震い
+      this.mannerT = U.rand(5, 9);
+      this.gentleMeter = 0;                 // やさしくなぞられた蓄積
+      this.blushBoost = 0;                  // なでられた直後の赤らみ
+      this.lean = 0;                        // なつき。指のほうへ寄る
+      this.nodT = 0;                        // こっくり居眠り
+      this.nodY = 0;
+      this.nodRot = 0;
+      this.sparkleT = 0;
     }
 
     update(dt, t) {
@@ -45,7 +56,75 @@
         if (this.phaseT > 2.8) this.done = true;
       }
 
+      const h = this.heart;
+
+      // ごきげんな身震い: 安心していると、ときどき自分からふるっと揺れる
+      if (this.phase === 'live' && h.comfort > 0.55 && h.stress < 0.3) {
+        this.mannerT -= dt;
+        if (this.mannerT <= 0) {
+          this.mannerT = U.rand(4, 8);
+          this.wiggle.kick(U.rand(2.2, 3.2) * (Math.random() < 0.5 ? -1 : 1));
+          this.emitSparkles(0, -18, 5, 44);
+        }
+      }
+      this.wiggle.update(dt);
+
+      // なつき: 触れられている指のほうへ、そっと寄る
+      const ptr = window.YW.view.pointer;
+      let leanTarget = 0;
+      if (ptr && t - ptr.t < 1.2 && h.comfort > 0.4 && this.phase === 'live') {
+        leanTarget = U.clamp((ptr.x - window.YW.view.cx) * 0.045, -8, 8) * h.comfort;
+      }
+      this.lean = U.damp(this.lean, leanTarget, 3, dt);
+
+      // 居眠り: 眠くなると、こっくり沈んでは戻る
+      if (h.drowsy > 0.45 && this.phase === 'live') {
+        this.nodT += dt;
+        const k = (this.nodT % 3.4) / 3.4;
+        const sink = k < 0.78 ? U.smooth(k / 0.78) : 1 - U.easeOutCubic((k - 0.78) / 0.22);
+        this.nodY = sink * 8 * h.drowsy;
+        this.nodRot = sink * 0.05 * h.drowsy;
+      } else {
+        this.nodY = U.damp(this.nodY, 0, 4, dt);
+        this.nodRot = U.damp(this.nodRot, 0, 4, dt);
+      }
+
+      this.blushBoost = Math.max(0, this.blushBoost - dt * 0.4);
+
+      // うれしい去りぎわには、キラキラがこぼれる
+      if (this.phase === 'exit' && this.exitStyle === 'happy' && this.phaseT < 1.1) {
+        this.sparkleT -= dt;
+        if (this.sparkleT <= 0) {
+          this.sparkleT = 0.16;
+          this.emitSparkles(U.rand(-28, 28), U.rand(-40, 0), 2, 14);
+        }
+      }
+
+      for (let i = this.sparkles.length - 1; i >= 0; i--) {
+        const s = this.sparkles[i];
+        s.age += dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.vy -= 14 * dt; // ふわっと昇っていく
+        if (s.age > s.dur) this.sparkles.splice(i, 1);
+      }
+
       this.subUpdate(dt, t);
+    }
+
+    emitSparkles(x, y, n, spread) {
+      for (let i = 0; i < n && this.sparkles.length < 40; i++) {
+        this.sparkles.push({
+          x: x + U.rand(-spread, spread),
+          y: y + U.rand(-spread * 0.6, spread * 0.6),
+          vx: U.rand(-9, 9),
+          vy: U.rand(-22, -6),
+          age: 0,
+          dur: U.rand(0.7, 1.3),
+          size: U.rand(2.2, 4.2),
+          ph: U.rand(0, U.TAU),
+        });
+      }
     }
 
     // --- こころへの共通の流し込み。main から呼ばれる ---
@@ -66,6 +145,14 @@
       const d = Math.min(40, Math.hypot(s.dx, s.dy));
       if (s.speed < 0.5) {
         this.heart.gentle(Math.min(0.02, d * 0.0009));
+        // なでられ続けると、赤らんでキラキラがこぼれる
+        this.gentleMeter += d * 0.008;
+        if (this.gentleMeter > 1) {
+          this.gentleMeter = 0;
+          this.blushBoost = Math.min(1, this.blushBoost + 0.7);
+          const v = window.YW.view;
+          this.emitSparkles(s.x - v.cx, s.y - v.cy, 2, 10);
+        }
       } else if (s.speed > 1.5) {
         this.heart.rough(Math.min(0.05, d * 0.0012));
       }
@@ -165,10 +252,55 @@
       oy += h.fatigue * 7 + h.drowsy * 4;
       ox += Math.sin(t * 0.7) * h.drowsy * 2.5;
 
-      // 呼吸
-      const b = 1 + Math.sin(this.breath) * 0.014 * (0.5 + h.comfort);
+      // なつき・こっくり
+      ox += this.lean;
+      oy += this.nodY;
+      const rot = this.wiggle.v * 0.12 + this.nodRot + this.lean * 0.006;
 
-      return { alpha: U.clamp(alpha, 0, 1), ox, oy, sx: sx * b, sy: sy * b };
+      // 呼吸。安心しているほど深くなる
+      const b = 1 + Math.sin(this.breath) * (0.012 + h.comfort * 0.016);
+
+      return { alpha: U.clamp(alpha, 0, 1), ox, oy, sx: sx * b, sy: sy * b, rot };
+    }
+
+    // 頬の赤らみの濃さ
+    blushAlpha() {
+      const h = this.heart;
+      const base = U.clamp((h.comfort - 0.55) / 0.4, 0, 1) * 0.5 + h.joy * 0.45;
+      return U.clamp((base + this.blushBoost * 0.6) * (1 - h.stress), 0, 1);
+    }
+
+    blushSpot(ctx, x, y, r, mul) {
+      const a = (this._blushA || 0) * (mul == null ? 1 : mul);
+      if (a < 0.03) return;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(236,130,132,' + (a * 0.5).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(236,130,132,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, U.TAU);
+      ctx.fill();
+    }
+
+    _drawSparkles(ctx) {
+      for (const s of this.sparkles) {
+        const k = s.age / s.dur;
+        const tw = 0.55 + 0.45 * Math.sin(s.ph + s.age * 14); // またたき
+        const a = (1 - k) * tw;
+        const r = s.size * (1 - k * 0.4);
+        ctx.save();
+        ctx.translate(s.x, s.y);
+        ctx.rotate(s.ph + s.age * 1.5);
+        ctx.fillStyle = 'rgba(255,241,205,' + (a * 0.9).toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.moveTo(0, -r);
+        ctx.quadraticCurveTo(r * 0.18, -r * 0.18, r, 0);
+        ctx.quadraticCurveTo(r * 0.18, r * 0.18, 0, r);
+        ctx.quadraticCurveTo(-r * 0.18, r * 0.18, -r, 0);
+        ctx.quadraticCurveTo(-r * 0.18, -r * 0.18, 0, -r);
+        ctx.fill();
+        ctx.restore();
+      }
     }
 
     draw(ctx, cx, cy, t) {
@@ -186,9 +318,12 @@
       ctx.fill();
       ctx.restore();
 
+      ctx.rotate(pr.rot);
       ctx.scale(pr.sx, pr.sy);
       ctx.globalAlpha = pr.alpha;
+      this._blushA = this.blushAlpha();
       this.subDraw(ctx, t);
+      this._drawSparkles(ctx);
       ctx.restore();
     }
   }
@@ -206,6 +341,7 @@
       this.glow = 0;       // 気持ちよさ
       this.squash = new Spring(0, 60, 10);
       this.startle = new Spring(0, 140, 11);
+      this.shineT = 0;
     }
 
     onTap() {
@@ -229,6 +365,12 @@
         // 回転に寄り添うなぞり。気持ちいい。
         this.glow = Math.min(1, this.glow + 0.07);
         this.heart.gentle(0.012);
+        this.shineT -= 1;
+        if (this.shineT <= 0) {
+          // 弧の先から、きらりとこぼれる
+          this.shineT = 9;
+          this.emitSparkles(Math.cos(this.angle) * 44, Math.sin(this.angle) * 44, 1, 4);
+        }
       } else if (along < 0 && Math.abs(dot) > 60) {
         this.confuse = Math.min(1, this.confuse + 0.22);
       }
@@ -301,6 +443,10 @@
       ctx.arc(0, 0, r, this.angle, this.angle + sweep);
       ctx.stroke();
       ctx.shadowBlur = 0;
+
+      // 頬。リングの下のほうが、ほんのり染まる
+      this.blushSpot(ctx, -27, 29, 10);
+      this.blushSpot(ctx, 27, 29, 10);
     }
   }
 
@@ -315,6 +461,8 @@
       this.groove = 0;      // リズムが合って楽しい
       this.tapTimes = [];
       this.pressIdx = -1;
+      this.wavePend = [];   // なでられてのウェーブ
+      this.waveCd = 0;
       this.dots = [0, 1, 2].map(() => ({
         hop: new Spring(0, 110, 9),
         stretch: new Spring(0, 70, 11),
@@ -352,6 +500,7 @@
         const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
         const dev = Math.max.apply(null, iv.map((v) => Math.abs(v - mean)));
         if (mean > 0.25 && mean < 0.95 && dev < mean * 0.28) {
+          if (this.groove < 0.4) this.emitSparkles(0, -16, 4, 40);
           this.groove = Math.min(1, this.groove + 0.55);
           this.heart.gentle(0.08);
         }
@@ -364,6 +513,15 @@
       this.dots[i].hideT = U.rand(2, 3.5);
       this.groove = 0;
       this.tapTimes.length = 0;
+    }
+
+    onStroke(s) {
+      // やさしくなでられると、順番に小さく跳ねてこたえる
+      if (s.speed < 0.5 && this.waveCd <= 0 && Math.abs(s.dx) > 1) {
+        this.waveCd = 1.6;
+        const order = s.dx > 0 ? [0, 1, 2] : [2, 1, 0];
+        this.wavePend = order.map((idx, k) => ({ idx, delay: k * 0.09 }));
+      }
     }
 
     onPress(info) {
@@ -388,6 +546,15 @@
       this.ph += dt * speed;
       // やさしくされると寄り添う
       this.spacing = U.damp(this.spacing, U.lerp(39, 26, h.comfort), 1.1, dt);
+      this.waveCd = Math.max(0, this.waveCd - dt);
+      for (let i = this.wavePend.length - 1; i >= 0; i--) {
+        const w = this.wavePend[i];
+        w.delay -= dt;
+        if (w.delay <= 0) {
+          this.dots[w.idx].hop.kick(-130);
+          this.wavePend.splice(i, 1);
+        }
+      }
       for (const d of this.dots) {
         d.hop.update(dt);
         d.stretch.update(dt);
@@ -423,6 +590,7 @@
         ctx.beginPath();
         ctx.ellipse(x, y, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, U.TAU);
         ctx.fill();
+        this.blushSpot(ctx, x, y + 3, rx * 1.1);
         ctx.restore();
       }
     }
@@ -513,6 +681,10 @@
       this._path(ctx, f, t);
       ctx.stroke();
       ctx.shadowBlur = 0;
+
+      // 頬。すすんだ先っぽのあたりが染まる
+      const fx = -this.w / 2 + this.w * f;
+      this.blushSpot(ctx, fx, this._y(fx, t), 9);
     }
   }
 
@@ -612,6 +784,9 @@
         ctx.fillRect(-110, -50, 220, 100);
         ctx.restore();
       }
+
+      // 頬。丸いところの下のほうが、ふんわり染まる
+      this.blushSpot(ctx, -72, -10, 13, 0.55);
     }
   }
 
@@ -789,6 +964,10 @@
       ctx.bezierCurveTo(hw - 4, -hh * 0.35, 4, -hh * 0.22, 3.5, 0);
       ctx.bezierCurveTo(4, hh * 0.22, hw - 4, hh * 0.35, hw - 4, hh);
       ctx.stroke();
+
+      // 頬。上のふくらみが染まる
+      this.blushSpot(ctx, -hw * 0.42, -hh * 0.48, 7);
+      this.blushSpot(ctx, hw * 0.42, -hh * 0.48, 7);
     }
   }
 

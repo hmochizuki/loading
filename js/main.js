@@ -77,12 +77,18 @@
     return current && current.phase !== 'exit' ? current : null;
   }
 
+  function notePointer(x, y) {
+    view.pointer = { x, y, t: performance.now() / 1000 };
+  }
+
   const input = new InputSense(canvas, {
-    touchStart() {
+    touchStart(x, y) {
+      notePointer(x, y);
       const c = alive();
       if (c) c.heart.touch();
     },
     tap(x, y) {
+      notePointer(x, y);
       const c = alive();
       if (c) c.tapAt(x, y);
     },
@@ -91,6 +97,7 @@
       if (c) c.rapidTaps(count);
     },
     stroke(s) {
+      notePointer(s.x, s.y);
       const c = alive();
       if (c) c.strokeMove(s);
     },
@@ -127,7 +134,10 @@
     // 押しっぱなしはフレームごとに伝える
     if (current && current.phase !== 'exit') {
       const pi = input.pressInfo(now);
-      if (pi) current.pressFrame(pi, dt);
+      if (pi) {
+        view.pointer = { x: pi.x, y: pi.y, t: now / 1000 };
+        current.pressFrame(pi, dt);
+      }
       else if (current.pressing && !input.p) current.released({ dur: 0, stroked: false });
     }
 
