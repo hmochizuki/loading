@@ -25,6 +25,12 @@
   window.addEventListener('resize', resize);
   resize();
 
+  // 動きを控えめにしたい人へ
+  try {
+    window.YW.reduceMotion = window.matchMedia
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch (e) { window.YW.reduceMotion = false; }
+
   // --- 出番の順番。ひとまわりごとに混ぜ直す ---
   let deck = [];
   function nextKind() {
@@ -51,11 +57,18 @@
     if (Array.isArray(raw)) stars = raw.filter((s) => s && typeof s.x === 'number').slice(0, 140);
   } catch (e) { /* 思い出せなくても、責めない */ }
 
-  function rememberStar(mood) {
+  function rememberStar(loader) {
+    const mood = loader.exitStyle;
     const warm = mood === 'happy' || mood === 'sleepy';
+    // その子が消えたあたりの空に、星が生まれる
+    const px = U.clamp((view.cx + loader.home.x) / view.w + U.rand(-0.02, 0.02), 0.05, 0.95);
+    const py = U.clamp(
+      (view.cy + loader.home.y - (mood === 'happy' ? 170 : 110)) / view.h + U.rand(-0.02, 0.02),
+      0.03, 0.5
+    );
     stars.push({
-      x: Math.random(),
-      y: Math.random() * 0.5 + 0.02,
+      x: px,
+      y: py,
       b: warm ? U.rand(0.55, 0.9) : U.rand(0.25, 0.5),
       w: warm ? 1 : 0,
       p: U.rand(0, U.TAU),
@@ -83,9 +96,33 @@
   const BG_COLD = [13, 15, 23];
   const BG_INNER_LIFT = 7;
 
+  // 時刻の気配。一緒に待っている時間帯が、ほんのわずかに色ににじむ
+  let hourTintCache = { at: -1, c: [0, 0, 0] };
+  function hourTint() {
+    const now = Date.now();
+    if (now - hourTintCache.at < 30000) return hourTintCache.c;
+    const d = new Date();
+    const hr = d.getHours() + d.getMinutes() / 60;
+    const bell = (center, width) => {
+      let x = Math.abs(hr - center);
+      x = Math.min(x, 24 - x); // 日をまたぐ
+      return Math.max(0, 1 - x / width);
+    };
+    const dawn = bell(7, 2.5);   // 朝は、ほのかに白む
+    const dusk = bell(18, 2.5);  // 夕は、ほんのり暖かい
+    const deep = bell(2.5, 3);   // 夜ふけは、少し深く
+    hourTintCache = {
+      at: now,
+      c: [dawn * 4 + dusk * 4 - deep * 3, dawn * 4 + dusk * 1.5 - deep * 3, dawn * 5 - deep * 1],
+    };
+    return hourTintCache.c;
+  }
+
   function drawBackground(t) {
     let c = U.mixColor(BG_BASE, BG_WARM, bgMood.warm);
     c = U.mixColor(c, BG_COLD, bgMood.cold);
+    const ht = hourTint();
+    c = [c[0] + ht[0], c[1] + ht[1], c[2] + ht[2]];
     const inner = [c[0] + BG_INNER_LIFT, c[1] + BG_INNER_LIFT, c[2] + BG_INNER_LIFT];
     const g = ctx.createRadialGradient(
       view.cx, view.cy - 30, 40,
@@ -181,7 +218,7 @@
     if (current) {
       current.update(dt, t);
       if (current.done) {
-        rememberStar(current.exitStyle);
+        rememberStar(current);
         current = null;
         gapT = U.rand(1.3, 2.4);
       }

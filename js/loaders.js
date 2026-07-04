@@ -291,8 +291,9 @@
 
       // こわいと小さく震える
       const st = h.stress + h.wakeStartle * 0.4;
-      ox += U.noise(t * 12.7 + 5) * st * 3.2;
-      oy += U.noise(t * 14.3) * st * 3.2;
+      const jm = window.YW.reduceMotion ? 0.35 : 1; // 動きを控えめにしたい人へ
+      ox += U.noise(t * 12.7 + 5) * st * 3.2 * jm;
+      oy += U.noise(t * 14.3) * st * 3.2 * jm;
 
       // 疲れると沈み、眠いとゆっくり揺れる
       oy += h.fatigue * 7 + h.drowsy * 4;
