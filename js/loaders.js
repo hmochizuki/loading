@@ -189,16 +189,34 @@
     pressFrame(info, dt) {
       this.heart.touch();
       this.pressing = true;
-      if (info.dur < 1.6) {
-        this.heart.gentle(0.09 * dt); // やさしく押されている
+      const h = this.heart;
+      if (!this._pressSeen) {
+        this._pressSeen = true;
+        this._lullMode = h.drowsy > 0.35; // 眠い子への長い静かな重みは、寝かしつけになる
+        this.lull = 0;
+      }
+      if (this._lullMode) {
+        this.lull += dt;
+        // 触れられて目が覚めるぶんを打ち消して、ゆっくり深く眠っていく
+        h.drowsy = Math.min(1, h.drowsy + dt * 0.62);
+        h.comfort = Math.min(1, h.comfort + dt * 0.05);
+        if (this.lull > 3 && this.phase === 'live') {
+          this.phase = 'exit';
+          this.phaseT = 0;
+          this.exitStyle = 'sleepy'; // 手のなかで、眠りに落ちた
+        }
+      } else if (info.dur < 1.6) {
+        h.gentle(0.09 * dt); // やさしく押されている
       } else if (info.dur > 2.2) {
-        this.heart.rough(0.09 * dt);  // 押されすぎ
+        h.rough(0.09 * dt);  // 押されすぎ
       }
       this.onPress(info, dt);
     }
 
     released(info) {
       this.pressing = false;
+      this._pressSeen = false;
+      this._lullMode = false;
       this.onRelease(info);
     }
 
@@ -221,6 +239,7 @@
       const h = this.heart;
       let c = U.mixColor(BODY, COOL, U.clamp(h.stress, 0, 1));
       c = U.mixColor(c, WARM, U.clamp(h.joy * 0.8 + h.comfort * 0.25, 0, 1) * 0.6);
+      if (this.nature.gold) c = U.mixColor(c, [242, 214, 150], 0.45); // 金いろの子
       const a = U.clamp((0.92 - h.fatigue * 0.28) * (aMul == null ? 1 : aMul), 0, 1);
       return U.rgba(c, a);
     }

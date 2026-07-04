@@ -41,6 +41,41 @@
   let current = null;
   let gapT = 0.6; // 最初は少しだけ待って現れる
 
+  // --- 星の思い出 ---
+  // 去っていった子は、ごく薄い星になって夜空に残る。
+  // しあわせに去った子は、少しだけあたたかい色になる。
+  const STAR_KEY = 'yasashiku-matte-stars';
+  let stars = [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(STAR_KEY) || '[]');
+    if (Array.isArray(raw)) stars = raw.filter((s) => s && typeof s.x === 'number').slice(0, 140);
+  } catch (e) { /* 思い出せなくても、責めない */ }
+
+  function rememberStar(mood) {
+    const warm = mood === 'happy' || mood === 'sleepy';
+    stars.push({
+      x: Math.random(),
+      y: Math.random() * 0.5 + 0.02,
+      b: warm ? U.rand(0.55, 0.9) : U.rand(0.25, 0.5),
+      w: warm ? 1 : 0,
+      p: U.rand(0, U.TAU),
+    });
+    if (stars.length > 140) stars.shift(); // 古い思い出は、そっと薄れる
+    try { localStorage.setItem(STAR_KEY, JSON.stringify(stars)); } catch (e) { /* それでもいい */ }
+  }
+
+  function drawStars(t) {
+    for (const s of stars) {
+      const tw = 0.7 + 0.3 * Math.sin(t * 0.35 + s.p); // とてもゆっくりまたたく
+      const a = (0.06 + s.b * 0.13) * tw;
+      ctx.fillStyle = s.w
+        ? 'rgba(255,241,219,' + a.toFixed(3) + ')'
+        : 'rgba(208,219,240,' + a.toFixed(3) + ')';
+      const r = s.b > 0.7 ? 1.7 : 1.2;
+      ctx.fillRect(s.x * view.w - r / 2, s.y * view.h - r / 2, r, r);
+    }
+  }
+
   // --- 背景の気配。とても控えめに、気分がにじむ ---
   const bgMood = { warm: 0, cold: 0 };
   const BG_BASE = [18, 20, 28];
@@ -70,6 +105,8 @@
     soft.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = soft;
     ctx.fillRect(0, 0, view.w, view.h);
+
+    drawStars(t);
   }
 
   // --- 手つきをローディングへ届ける ---
@@ -144,6 +181,7 @@
     if (current) {
       current.update(dt, t);
       if (current.done) {
+        rememberStar(current.exitStyle);
         current = null;
         gapT = U.rand(1.3, 2.4);
       }

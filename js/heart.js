@@ -26,21 +26,27 @@
 
     // 生まれつきの性質。同じ種類でも、来る子はみんな少しずつちがう
     static randomNature() {
+      // ごくまれに、ちいさな子や、おおきな子が来る
+      let size = U.rand(0.92, 1.08);
+      const roll = Math.random();
+      if (roll < 0.05) size = U.rand(0.72, 0.82);
+      else if (roll < 0.1) size = U.rand(1.18, 1.3);
       return {
         shy: U.rand(0, 1),               // 臆病さ。びくっとしやすく、なつくのに時間がかかる
         warmth: U.rand(0.7, 1.4),        // 人懐こさ。やさしさが染みやすい
         sensitivity: U.rand(0.7, 1.4),   // 打たれ弱さ
         drowsiness: U.rand(0.6, 1.5),    // 眠がり
         liveliness: U.rand(0.75, 1.25),  // 元気
-        size: U.rand(0.92, 1.08),        // からだの大きさ
+        size,
+        gold: Math.random() < 0.03,      // ごくごくまれに、金いろの子
         initStress: U.rand(0.05, 0.3),   // 現れたときの緊張
         initComfort: U.rand(0.3, 0.5),
       };
     }
 
-    // 触れられた瞬間に呼ぶ
+    // 触れられた瞬間に呼ぶ。触れられ続けているあいだは、もうびくっとしない
     touch() {
-      if (this.drowsy > 0.45) this.wakeStartle = 1;
+      if (this.drowsy > 0.45 && this.sinceTouch > 0.5) this.wakeStartle = 1;
       this.sinceTouch = 0;
     }
 
