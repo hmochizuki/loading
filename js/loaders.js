@@ -15,6 +15,7 @@
   class LoaderBase {
     constructor(heart) {
       this.heart = heart;
+      this.nature = heart.nature;
       this.phase = 'enter';
       this.phaseT = 0;
       this.age = 0;
@@ -27,7 +28,7 @@
 
       this.sparkles = [];
       this.wiggle = new Spring(0, 60, 6);   // ごきげんな身震い
-      this.mannerT = U.rand(5, 9);
+      this.mannerT = U.rand(5, 9) / this.nature.liveliness;
       this.gentleMeter = 0;                 // やさしくなぞられた蓄積
       this.blushBoost = 0;                  // なでられた直後の赤らみ
       this.lean = 0;                        // なつき。指のほうへ寄る
@@ -41,7 +42,8 @@
       this.age += dt;
       this.phaseT += dt;
       this.heart.update(dt);
-      this.breath += dt * (1.4 - this.heart.drowsy * 0.6 + this.heart.stress * 0.8);
+      this.breath += dt * (1.4 - this.heart.drowsy * 0.6 + this.heart.stress * 0.8)
+        * (0.8 + this.nature.liveliness * 0.2);
 
       if (this.phase === 'enter') {
         if (this.phaseT > 1.1) { this.phase = 'live'; this.phaseT = 0; }
@@ -62,18 +64,25 @@
       if (this.phase === 'live' && h.comfort > 0.55 && h.stress < 0.3) {
         this.mannerT -= dt;
         if (this.mannerT <= 0) {
-          this.mannerT = U.rand(4, 8);
+          this.mannerT = U.rand(4, 8) / this.nature.liveliness;
           this.wiggle.kick(U.rand(2.2, 3.2) * (Math.random() < 0.5 ? -1 : 1));
           this.emitSparkles(0, -18, 5, 44);
         }
       }
       this.wiggle.update(dt);
 
-      // なつき: 触れられている指のほうへ、そっと寄る
+      // なつき: なついた子は指のほうへ寄り、
+      // 臆病な子はなつくまで、目をそらすように少し離れる
       const ptr = window.YW.view.pointer;
       let leanTarget = 0;
-      if (ptr && t - ptr.t < 1.2 && h.comfort > 0.4 && this.phase === 'live') {
-        leanTarget = U.clamp((ptr.x - window.YW.view.cx) * 0.045, -8, 8) * h.comfort;
+      if (ptr && t - ptr.t < 1.2 && this.phase === 'live') {
+        const toward = U.clamp((ptr.x - window.YW.view.cx) * 0.045, -8, 8);
+        const affinity = h.comfort - 0.3 - this.nature.shy * 0.35;
+        if (affinity > 0) {
+          leanTarget = toward * Math.min(1, affinity * 2.5) * (0.5 + h.comfort * 0.5);
+        } else {
+          leanTarget = -U.clamp(toward, -4, 4) * Math.min(1, -affinity * 3);
+        }
       }
       this.lean = U.damp(this.lean, leanTarget, 3, dt);
 
@@ -131,7 +140,8 @@
 
     tapAt(x, y) {
       this.heart.touch();
-      this.heart.stress = Math.min(1, this.heart.stress + 0.03); // 小さくびくっ
+      // 小さくびくっ。臆病な子ほど大きい
+      this.heart.stress = Math.min(1, this.heart.stress + 0.03 * (0.6 + this.nature.shy * 0.8));
       this.onTap(x, y);
     }
 
@@ -211,12 +221,12 @@
       } else if (this.phase === 'exit') {
         const k = U.clamp(this.phaseT / 2.8, 0, 1);
         if (this.exitStyle === 'happy') {
-          // 二回はねてから、ふわっと昇っていく
-          if (this.phaseT < 0.9) {
-            oy = -Math.abs(Math.sin(this.phaseT * Math.PI * 2.2)) * 16;
-          } else {
+          // 二回はねてから、ふわっと昇っていく。はねは徐々に小さく
+          const hopFade = U.clamp(1 - U.smooth((this.phaseT - 0.55) / 0.5), 0, 1);
+          oy = -Math.abs(Math.sin(this.phaseT * Math.PI * 2.2)) * 16 * hopFade;
+          if (this.phaseT > 0.9) {
             const k2 = (this.phaseT - 0.9) / 1.9;
-            oy = -U.easeInCubic(k2) * 90;
+            oy += -U.easeInCubic(k2) * 90;
             alpha = 1 - U.smooth(k2);
             sx = sy = 1 + k2 * 0.08;
           }
@@ -258,15 +268,16 @@
       const rot = this.wiggle.v * 0.12 + this.nodRot + this.lean * 0.006;
 
       // 呼吸。安心しているほど深くなる
-      const b = 1 + Math.sin(this.breath) * (0.012 + h.comfort * 0.016);
+      const b = (1 + Math.sin(this.breath) * (0.012 + h.comfort * 0.016)) * this.nature.size;
 
       return { alpha: U.clamp(alpha, 0, 1), ox, oy, sx: sx * b, sy: sy * b, rot };
     }
 
-    // 頬の赤らみの濃さ
+    // 頬の赤らみの濃さ。人懐こい子は赤らみやすい
     blushAlpha() {
       const h = this.heart;
-      const base = U.clamp((h.comfort - 0.55) / 0.4, 0, 1) * 0.5 + h.joy * 0.45;
+      const th = 0.62 - this.nature.warmth * 0.12;
+      const base = U.clamp((h.comfort - th) / 0.4, 0, 1) * 0.5 + h.joy * 0.45;
       return U.clamp((base + this.blushBoost * 0.6) * (1 - h.stress), 0, 1);
     }
 
@@ -345,7 +356,7 @@
     }
 
     onTap() {
-      this.startle.kick(-7);
+      this.startle.kick(-7 * (0.7 + this.nature.shy * 0.6));
       this.angle += U.rand(-0.25, 0.25);
     }
 
@@ -358,23 +369,25 @@
       const dx = s.x - v.cx, dy = s.y - v.cy;
       const r = Math.hypot(dx, dy);
       if (r < 12 || r > 110) return;
-      // リングの接線方向となぞりの向きを比べる
+      // リングの接線方向となぞりの向きを比べる。
+      // イベントの回数でなく、なぞった距離で効かせる
+      const dist = Math.min(40, Math.hypot(s.dx, s.dy));
       const dot = s.dx * (-dy) + s.dy * dx;
       const along = dot * this.dir;
       if (along > 0 && s.speed < 0.7) {
         // 回転に寄り添うなぞり。気持ちいい。
-        this.glow = Math.min(1, this.glow + 0.07);
-        this.heart.gentle(0.012);
-        this.shineT -= 1;
+        this.glow = Math.min(1, this.glow + Math.min(0.07, dist * 0.014));
+        this.heart.gentle(Math.min(0.012, dist * 0.0024));
+        this.shineT -= dist;
         if (this.shineT <= 0) {
           // 弧の先から、きらりとこぼれる
-          this.shineT = 9;
+          this.shineT = 45;
           this.emitSparkles(Math.cos(this.angle) * 44, Math.sin(this.angle) * 44, 1, 4);
         }
       } else if (along < 0 && Math.abs(dot) > 60) {
-        this.confuse = Math.min(1, this.confuse + 0.22);
+        this.confuse = Math.min(1, this.confuse + Math.min(0.2, dist * 0.04));
       }
-      if (s.speed > 1.8) this.dizzy = Math.min(1, this.dizzy + 0.06);
+      if (s.speed > 1.8) this.dizzy = Math.min(1, this.dizzy + Math.min(0.06, dist * 0.003));
     }
 
     onPress(info) {
@@ -394,6 +407,7 @@
 
       const h = this.heart;
       let sp = 2.1
+        * (0.8 + this.nature.liveliness * 0.2)
         * (1 - h.comfort * 0.45)     // 安心するとゆっくりになる
         * (1 - h.drowsy * 0.6)
         * (1 - U.clamp(this.squash.v, 0, 1) * 0.85)
@@ -540,6 +554,7 @@
       const h = this.heart;
       this.groove = Math.max(0, this.groove - dt * 0.1);
       const speed = 3.1
+        * (0.8 + this.nature.liveliness * 0.2)
         * (1 - h.drowsy * 0.55)
         * (1 - h.fatigue * 0.3)
         * (1 + this.groove * 0.2);
@@ -565,7 +580,8 @@
 
     subDraw(ctx) {
       const h = this.heart;
-      const amp = 12 * (1 - h.drowsy * 0.7) * (1 - h.fatigue * 0.45) * (1 + this.groove * 0.6);
+      const amp = 12 * (0.8 + this.nature.liveliness * 0.2)
+        * (1 - h.drowsy * 0.7) * (1 - h.fatigue * 0.45) * (1 + this.groove * 0.6);
       const rDot = 9;
       ctx.fillStyle = this.bodyColor();
       for (let i = 0; i < 3; i++) {
@@ -634,7 +650,7 @@
       if (!this.pressing) this.pressBreath = Math.max(0, this.pressBreath - dt * 0.7);
       this.tremble.update(dt);
       // ほんの少しずつ進むふりをして、そっと戻る
-      this.target += dt * 0.0022;
+      this.target += dt * 0.0022 * (0.7 + this.nature.liveliness * 0.6);
       this.target = U.damp(this.target, 0.14 + this.heart.comfort * 0.12, 0.03, dt);
       this.fill = U.damp(this.fill, this.target, this.retreat > 0 ? 2.2 : 4.5, dt);
       this.retreat = Math.max(0, this.retreat - dt);
@@ -723,7 +739,7 @@
         // 光の帯が指についてくる
         this.shimmerX = U.damp(this.shimmerX, this.chaseX, 7, dt);
       } else {
-        this.shimmerX += dt * 0.6 * (1 - this.heart.drowsy * 0.55);
+        this.shimmerX += dt * 0.6 * (0.8 + this.nature.liveliness * 0.2) * (1 - this.heart.drowsy * 0.55);
         if (this.shimmerX > 1.7) this.shimmerX = -1.7;
       }
       this.glitch = Math.max(0, this.glitch - dt * 0.65);
@@ -847,7 +863,8 @@
       this.clog = Math.max(0, this.clog - dt);
 
       // 流れの太さ。疲れると細くなる
-      const flow = this.clog > 0 ? 0 : (1 - h.fatigue * 0.6) * (1 - h.drowsy * 0.45);
+      const flow = this.clog > 0 ? 0
+        : (0.8 + this.nature.liveliness * 0.2) * (1 - h.fatigue * 0.6) * (1 - h.drowsy * 0.45);
       this.spawnT -= dt;
       if (flow > 0.05 && this.spawnT <= 0) {
         this.spawnT = 0.05 / Math.max(0.2, flow);
