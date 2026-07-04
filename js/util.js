@@ -21,6 +21,13 @@
     },
     smooth(t) { t = U.clamp(t, 0, 1); return t * t * (3 - 2 * t); },
 
+    // 角度差を -π..π に折り返す
+    angNorm(a) {
+      while (a > Math.PI) a -= U.TAU;
+      while (a < -Math.PI) a += U.TAU;
+      return a;
+    },
+
     // なめらかなゆらぎ (-1..1 くらい)
     noise(t) {
       return Math.sin(t * 1.7) * 0.5 + Math.sin(t * 2.9 + 1.3) * 0.3 + Math.sin(t * 4.7 + 2.1) * 0.2;

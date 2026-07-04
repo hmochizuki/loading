@@ -25,6 +25,7 @@
       this.exitDir = Math.random() < 0.5 ? -1 : 1;
       this.breath = U.rand(0, U.TAU);
       this.pressing = false;
+      this.home = { x: 0, y: 0 }; // 画面中央からのずれ。旅をする子が使う
 
       this.sparkles = [];
       this.wiggle = new Spring(0, 60, 6);   // ごきげんな身震い
@@ -66,7 +67,7 @@
         if (this.mannerT <= 0) {
           this.mannerT = U.rand(4, 8) / this.nature.liveliness;
           this.wiggle.kick(U.rand(2.2, 3.2) * (Math.random() < 0.5 ? -1 : 1));
-          this.emitSparkles(0, -18, 5, 44);
+          this.joyBurst(0, -18, 4);
         }
       }
       this.wiggle.update(dt);
@@ -76,7 +77,7 @@
       const ptr = window.YW.view.pointer;
       let leanTarget = 0;
       if (ptr && t - ptr.t < 1.2 && this.phase === 'live') {
-        const toward = U.clamp((ptr.x - window.YW.view.cx) * 0.045, -8, 8);
+        const toward = U.clamp((ptr.x - window.YW.view.cx - this.home.x) * 0.045, -8, 8);
         const affinity = h.comfort - 0.3 - this.nature.shy * 0.35;
         if (affinity > 0) {
           leanTarget = toward * Math.min(1, affinity * 2.5) * (0.5 + h.comfort * 0.5);
@@ -104,8 +105,8 @@
       if (this.phase === 'exit' && this.exitStyle === 'happy' && this.phaseT < 1.1) {
         this.sparkleT -= dt;
         if (this.sparkleT <= 0) {
-          this.sparkleT = 0.16;
-          this.emitSparkles(U.rand(-28, 28), U.rand(-40, 0), 2, 14);
+          this.sparkleT = 0.18;
+          this.joyBurst(U.rand(-28, 28), U.rand(-40, 0), 2);
         }
       }
 
@@ -136,6 +137,11 @@
       }
     }
 
+    // うれしさのこぼれ方。それぞれのローディングが自分の流儀で上書きする
+    joyBurst(x, y, n) {
+      this.emitSparkles(x, y, n, 20);
+    }
+
     // --- こころへの共通の流し込み。main から呼ばれる ---
 
     tapAt(x, y) {
@@ -161,7 +167,7 @@
           this.gentleMeter = 0;
           this.blushBoost = Math.min(1, this.blushBoost + 0.7);
           const v = window.YW.view;
-          this.emitSparkles(s.x - v.cx, s.y - v.cy, 2, 10);
+          this.joyBurst(s.x - v.cx - this.home.x, s.y - v.cy - this.home.y, 2);
         }
       } else if (s.speed > 1.5) {
         this.heart.rough(Math.min(0.05, d * 0.0012));
@@ -318,7 +324,7 @@
       const pr = this.presence(t);
       if (pr.alpha <= 0.002) return;
       ctx.save();
-      ctx.translate(cx + pr.ox, cy + pr.oy);
+      ctx.translate(cx + pr.ox + this.home.x, cy + pr.oy + this.home.y);
 
       // 足もとのほのかな影
       ctx.save();
@@ -353,11 +359,97 @@
       this.squash = new Spring(0, 60, 10);
       this.startle = new Spring(0, 140, 11);
       this.shineT = 0;
+      this.shines = [];      // 弧を走る光
+      this.mode = 'ring';    // 'ring' | 'snake' | 'coil'
+      this.trail = null;     // 旅のからだ。中央基準の絶対座標
+      this.target = null;
+      this.headDir = 0;
+      this.wigglePh = 0;
+      this.wiggleAmp = 0;
+      this.travelSpeed = 0;
+      this.coilAng = 0;
+      this.coilTurned = 0;
+      this.settle = false;
     }
 
-    onTap() {
+    // うれしさは、弧を走る光になる
+    joyBurst(x, y, n) {
+      for (let i = 0; i < Math.min(3, n) && this.shines.length < 8; i++) {
+        this.shines.push({
+          base: this.angle + U.rand(0, 1.5),
+          speed: U.rand(2.5, 4.5),
+          age: 0,
+          dur: U.rand(0.6, 1.0),
+        });
+      }
+    }
+
+    onTap(x, y) {
+      const v = window.YW.view;
+      const tx = x - v.cx, ty = y - v.cy;
+      if (this.mode === 'snake') {
+        // 旅の途中で呼び直された。行き先を変える
+        this._setTarget(tx, ty);
+        return;
+      }
+      if (this.mode === 'coil') return;
+      const lx = tx - this.home.x, ly = ty - this.home.y;
+      if (Math.hypot(lx, ly) > 115) {
+        // 離れたところから呼ばれた。ほどけて、会いにいく
+        this._startSnake(tx, ty);
+        return;
+      }
       this.startle.kick(-7 * (0.7 + this.nature.shy * 0.6));
       this.angle += U.rand(-0.25, 0.25);
+    }
+
+    _setTarget(tx, ty) {
+      const v = window.YW.view;
+      const mx = Math.max(60, v.w / 2 - 70);
+      const my = Math.max(60, v.h / 2 - 90);
+      this.target = { x: U.clamp(tx, -mx, mx), y: U.clamp(ty, -my, my) };
+    }
+
+    _startSnake(tx, ty) {
+      const h = this.heart;
+      // いまの弧のかたちのまま、からだにする
+      const sweep = 4.3;
+      const n = 30;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = this.angle + sweep - (i / (n - 1)) * sweep;
+        pts.push({
+          x: this.home.x + Math.cos(a) * 42,
+          y: this.home.y + Math.sin(a) * 42,
+        });
+      }
+      this.trail = pts;
+      this.mode = 'snake';
+      this.settle = false;
+      this.headDir = Math.atan2(ty - pts[0].y, tx - pts[0].x);
+      this.wigglePh = U.rand(0, U.TAU);
+      this._setTarget(tx, ty);
+      // 気分と性格で、旅の仕方が変わる
+      const playful = U.clamp(h.comfort * 0.6 + h.joy * 0.6, 0, 1);
+      this.wiggleAmp = h.stress > 0.45
+        ? U.rand(0.05, 0.15)                  // こわいときは、まっすぐ急ぐ
+        : U.rand(0.3, 0.6) + playful * 0.5;   // ごきげんなときは、くねくねと
+      this.travelSpeed = (h.stress > 0.45 ? 230 : 150)
+        * (0.8 + this.nature.liveliness * 0.3);
+      h.touch();
+    }
+
+    _pushHead(nx, ny) {
+      this.trail.unshift({ x: nx, y: ny });
+      // からだの長さ(弧の長さぶん)を保つ
+      let len = 0;
+      for (let i = 1; i < this.trail.length; i++) {
+        len += Math.hypot(this.trail[i].x - this.trail[i - 1].x, this.trail[i].y - this.trail[i - 1].y);
+        if (len > 180) {
+          this.trail.length = i + 1;
+          break;
+        }
+      }
     }
 
     onRapid() {
@@ -365,8 +457,9 @@
     }
 
     onStroke(s) {
+      if (this.mode !== 'ring') return;
       const v = window.YW.view;
-      const dx = s.x - v.cx, dy = s.y - v.cy;
+      const dx = s.x - v.cx - this.home.x, dy = s.y - v.cy - this.home.y;
       const r = Math.hypot(dx, dy);
       if (r < 12 || r > 110) return;
       // リングの接線方向となぞりの向きを比べる。
@@ -380,9 +473,9 @@
         this.heart.gentle(Math.min(0.012, dist * 0.0024));
         this.shineT -= dist;
         if (this.shineT <= 0) {
-          // 弧の先から、きらりとこぼれる
+          // きらりと光が弧を走る
           this.shineT = 45;
-          this.emitSparkles(Math.cos(this.angle) * 44, Math.sin(this.angle) * 44, 1, 4);
+          this.joyBurst(0, 0, 1);
         }
       } else if (along < 0 && Math.abs(dot) > 60) {
         this.confuse = Math.min(1, this.confuse + Math.min(0.2, dist * 0.04));
@@ -391,6 +484,7 @@
     }
 
     onPress(info) {
+      if (this.mode !== 'ring') return;
       this.squash.set(U.clamp((info.dur - 0.35) / 1.5, 0, 1));
     }
 
@@ -399,6 +493,58 @@
     }
 
     subUpdate(dt, t) {
+      for (let i = this.shines.length - 1; i >= 0; i--) {
+        this.shines[i].age += dt;
+        if (this.shines[i].age > this.shines[i].dur) this.shines.splice(i, 1);
+      }
+
+      if (this.mode === 'snake') {
+        const head = this.trail[0];
+        const want = Math.atan2(this.target.y - head.y, this.target.x - head.x);
+        this.headDir += U.angNorm(want - this.headDir) * Math.min(1, dt * 4);
+        this.wigglePh += dt * 7;
+        const distT = Math.hypot(this.target.x - head.x, this.target.y - head.y);
+        // 近づいたら、くねりをおさめる
+        const wig = Math.sin(this.wigglePh) * this.wiggleAmp * U.clamp((distT - 60) / 120, 0, 1);
+        const dirA = this.headDir + wig;
+        const step = this.travelSpeed * dt;
+        this._pushHead(head.x + Math.cos(dirA) * step, head.y + Math.sin(dirA) * step);
+        if (distT < 48) {
+          this.mode = 'coil';
+          this.coilAng = Math.atan2(head.y - this.target.y, head.x - this.target.x);
+          this.coilTurned = 0;
+        }
+      } else if (this.mode === 'coil') {
+        // 頭から、目的地の輪に巻きついていく
+        const w = (this.travelSpeed / 42) * dt;
+        this.coilAng += w * this.dir;
+        this.coilTurned += w;
+        this._pushHead(
+          this.target.x + Math.cos(this.coilAng) * 42,
+          this.target.y + Math.sin(this.coilAng) * 42
+        );
+        if (this.coilTurned > 4.6) {
+          // からだが輪にもどった
+          this.mode = 'ring';
+          this.angle = this.coilAng - 4.3 * this.dir;
+          this.trail = null;
+          this.settle = true;
+        }
+      }
+
+      if (this.trail) {
+        // 影と存在の中心は、からだの真ん中を追いかける
+        const mid = this.trail[(this.trail.length / 2) | 0];
+        this.home.x = U.damp(this.home.x, mid.x, 6, dt);
+        this.home.y = U.damp(this.home.y, mid.y, 6, dt);
+      } else if (this.settle) {
+        this.home.x = U.damp(this.home.x, this.target.x, 8, dt);
+        this.home.y = U.damp(this.home.y, this.target.y, 8, dt);
+        if (Math.hypot(this.home.x - this.target.x, this.home.y - this.target.y) < 0.4) {
+          this.settle = false;
+        }
+      }
+
       this.dizzy = Math.max(0, this.dizzy - dt * 0.3);
       this.confuse = Math.max(0, this.confuse - dt * 0.7);
       this.glow = Math.max(0, this.glow - dt * 0.35);
@@ -418,6 +564,27 @@
     }
 
     subDraw(ctx, t) {
+      const col0 = this.bodyColor();
+      if (this.trail) {
+        // ほどけて、うねりながら旅をする
+        ctx.strokeStyle = col0;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 10;
+        ctx.beginPath();
+        for (let i = 0; i < this.trail.length; i++) {
+          const p = this.trail[i];
+          const x = p.x - this.home.x, y = p.y - this.home.y;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        return;
+      }
+      if (this.settle) {
+        // 巻き直した直後。影が追いつくまで、輪は目的地に留まる
+        ctx.translate(this.target.x - this.home.x, this.target.y - this.home.y);
+      }
+
       const sq = U.clamp(this.squash.v, 0, 1);
       const st = 1 + this.startle.v * 0.12;
 
@@ -458,6 +625,22 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
+      // うれしさの光が、弧を走り抜ける
+      for (const sh of this.shines) {
+        const k = sh.age / sh.dur;
+        const a0 = sh.base + sh.age * sh.speed * this.dir;
+        ctx.save();
+        ctx.globalAlpha *= (1 - k) * 0.85;
+        ctx.strokeStyle = U.rgba(WARM, 1);
+        ctx.shadowColor = U.rgba(WARM, 0.9);
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = 10;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, a0, a0 + 0.22);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // 頬。リングの下のほうが、ほんのり染まる
       this.blushSpot(ctx, -27, 29, 10);
       this.blushSpot(ctx, 27, 29, 10);
@@ -477,12 +660,28 @@
       this.pressIdx = -1;
       this.wavePend = [];   // なでられてのウェーブ
       this.waveCd = 0;
+      this.crumbs = [];     // うれしくて跳ねる、点の子たち
       this.dots = [0, 1, 2].map(() => ({
         hop: new Spring(0, 110, 9),
         stretch: new Spring(0, 70, 11),
         hide: 0,
         hideT: 0,
       }));
+    }
+
+    // うれしさは、小さな点になって跳ねまわる
+    joyBurst(x, y, n) {
+      for (let i = 0; i < n + 1 && this.crumbs.length < 24; i++) {
+        this.crumbs.push({
+          x: U.clamp(x, -50, 50) + U.rand(-18, 18),
+          y: -4,
+          vx: U.rand(-28, 28),
+          vy: U.rand(-95, -40),
+          r: U.rand(1.8, 3.2),
+          age: 0,
+          dur: U.rand(0.9, 1.4),
+        });
+      }
     }
 
     dotX(i) { return (i - 1) * this.spacing; }
@@ -514,7 +713,7 @@
         const mean = iv.reduce((a, b) => a + b, 0) / iv.length;
         const dev = Math.max.apply(null, iv.map((v) => Math.abs(v - mean)));
         if (mean > 0.25 && mean < 0.95 && dev < mean * 0.28) {
-          if (this.groove < 0.4) this.emitSparkles(0, -16, 4, 40);
+          if (this.groove < 0.4) this.joyBurst(0, -16, 4);
           this.groove = Math.min(1, this.groove + 0.55);
           this.heart.gentle(0.08);
         }
@@ -561,6 +760,20 @@
       this.ph += dt * speed;
       // やさしくされると寄り添う
       this.spacing = U.damp(this.spacing, U.lerp(39, 26, h.comfort), 1.1, dt);
+      // 点の子たちは、小さく弾んで消えていく
+      for (let i = this.crumbs.length - 1; i >= 0; i--) {
+        const c = this.crumbs[i];
+        c.age += dt;
+        c.vy += 320 * dt;
+        c.x += c.vx * dt;
+        c.y += c.vy * dt;
+        if (c.y > 4 && c.vy > 0) {
+          c.y = 4;
+          c.vy *= -0.45;
+          c.vx *= 0.8;
+        }
+        if (c.age > c.dur) this.crumbs.splice(i, 1);
+      }
       this.waveCd = Math.max(0, this.waveCd - dt);
       for (let i = this.wavePend.length - 1; i >= 0; i--) {
         const w = this.wavePend[i];
@@ -609,6 +822,17 @@
         this.blushSpot(ctx, x, y + 3, rx * 1.1);
         ctx.restore();
       }
+
+      for (const c of this.crumbs) {
+        const k = c.age / c.dur;
+        ctx.save();
+        ctx.globalAlpha *= (1 - k) * 0.85;
+        ctx.fillStyle = U.rgba(WARM, 1);
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, c.r * (1 - k * 0.3), 0, U.TAU);
+        ctx.fill();
+        ctx.restore();
+      }
     }
   }
 
@@ -624,6 +848,12 @@
       this.pressBreath = 0;
       this.retreat = 0;
       this.w = 190;
+      this.pulses = [];   // うれしさが端から端へ走る光
+    }
+
+    // うれしさは、バーを走り抜ける光になる
+    joyBurst() {
+      if (this.pulses.length < 4) this.pulses.push({ p: -0.08 });
     }
 
     onStroke(s) {
@@ -654,6 +884,10 @@
       this.target = U.damp(this.target, 0.14 + this.heart.comfort * 0.12, 0.03, dt);
       this.fill = U.damp(this.fill, this.target, this.retreat > 0 ? 2.2 : 4.5, dt);
       this.retreat = Math.max(0, this.retreat - dt);
+      for (let i = this.pulses.length - 1; i >= 0; i--) {
+        this.pulses[i].p += dt * 1.5;
+        if (this.pulses[i].p > 1.1) this.pulses.splice(i, 1);
+      }
     }
 
     // 疲れると右のほうが垂れる
@@ -698,6 +932,30 @@
       ctx.stroke();
       ctx.shadowBlur = 0;
 
+      // うれしさの光が、端から端へ走る
+      for (const pu of this.pulses) {
+        const a = 0.5 * Math.sin(Math.PI * U.clamp(pu.p, 0, 1));
+        if (a <= 0.01) continue;
+        const f0 = U.clamp(pu.p - 0.07, 0, 1);
+        const f1 = U.clamp(pu.p + 0.07, 0, 1);
+        if (f1 - f0 < 0.01) continue;
+        ctx.save();
+        ctx.globalAlpha *= a;
+        ctx.strokeStyle = U.rgba(WARM, 1);
+        ctx.shadowColor = U.rgba(WARM, 0.9);
+        ctx.shadowBlur = 9;
+        ctx.lineWidth = 9;
+        const n = 8;
+        ctx.beginPath();
+        for (let i = 0; i <= n; i++) {
+          const x = -this.w / 2 + this.w * U.lerp(f0, f1, i / n);
+          const y = this._y(x, t);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // 頬。すすんだ先っぽのあたりが染まる
       const fx = -this.w / 2 + this.w * f;
       this.blushSpot(ctx, fx, this._y(fx, t), 9);
@@ -717,6 +975,12 @@
       this.jx = new Spring(0, 130, 7);
       this.jy = new Spring(0, 130, 7);
       this.glitch = 0;
+      this.joyBands = [];   // うれしさの一閃
+    }
+
+    // うれしさは、速い光の帯になって駆け抜ける
+    joyBurst() {
+      if (this.joyBands.length < 3) this.joyBands.push({ x: -1.9 });
     }
 
     onTap() {
@@ -743,6 +1007,10 @@
         if (this.shimmerX > 1.7) this.shimmerX = -1.7;
       }
       this.glitch = Math.max(0, this.glitch - dt * 0.65);
+      for (let i = this.joyBands.length - 1; i >= 0; i--) {
+        this.joyBands[i].x += dt * 3.4;
+        if (this.joyBands[i].x > 2.1) this.joyBands.splice(i, 1);
+      }
       this.radius.set(6 + this.heart.comfort * 7); // やさしくされると角が丸くなる
       this.radius.update(dt);
       this.jx.update(dt);
@@ -798,6 +1066,17 @@
         g.addColorStop(1, 'rgba(255,255,255,0)');
         ctx.fillStyle = g;
         ctx.fillRect(-110, -50, 220, 100);
+
+        // うれしさの一閃
+        for (const jb of this.joyBands) {
+          const jx = jb.x * 130;
+          const jg = ctx.createLinearGradient(jx - 30, 0, jx + 30, 8);
+          jg.addColorStop(0, 'rgba(255,244,214,0)');
+          jg.addColorStop(0.5, 'rgba(255,244,214,0.24)');
+          jg.addColorStop(1, 'rgba(255,244,214,0)');
+          ctx.fillStyle = jg;
+          ctx.fillRect(-110, -50, 220, 100);
+        }
         ctx.restore();
       }
 
@@ -826,6 +1105,20 @@
 
     _moundAt(x) {
       return this.mound * Math.exp(-(x * x) / (2 * 12 * 12));
+    }
+
+    // うれしさは、金色の砂になって舞い上がる
+    joyBurst(x, y, n) {
+      for (let k = 0; k < n + 2 && this.parts.length < 160; k++) {
+        this.parts.push({
+          x: U.rand(-10, 10),
+          y: this.hh - 6 - this._moundAt(0) * 0.6,
+          vx: U.rand(-16, 16),
+          vy: U.rand(-85, -35),
+          pop: true,
+          gold: true,
+        });
+      }
     }
 
     onTap() {
@@ -953,9 +1246,16 @@
       ctx.closePath();
       ctx.fill();
 
-      // 落ちる砂つぶ
+      // 落ちる砂つぶ。金色の子はうれしさのしるし
       for (const p of this.parts) {
-        ctx.fillRect(p.x - 1, p.y - 1, 2, 2);
+        if (p.gold) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(255,224,150,0.95)';
+          ctx.fillRect(p.x - 1.3, p.y - 1.3, 2.6, 2.6);
+          ctx.restore();
+        } else {
+          ctx.fillRect(p.x - 1, p.y - 1, 2, 2);
+        }
       }
       // 詰まっている砂
       if (this.clog > 0) {
